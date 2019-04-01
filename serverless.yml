@@ -1,0 +1,93 @@
+# Format and send PagerDuty Alerts to CloudWatch
+service: cloudwatch-to-pagerduty-publisher
+
+plugins:
+  - serverless-python-requirements
+  - serverless-parameters
+
+custom:
+  stage: "${opt:stage, env:SLS_STAGE, 'dev'}"
+  log_level: "${env:LOG_LEVEL, 'INFO'}"
+
+  parameters:
+    PagerDutyIntegrationEndpoint:
+      Type: String
+      Description: "Integration endpoint provided by PagerDuty"
+      Default: "${env:SLS_PD_ENDPOINT, 'https://www.example.com'}"
+
+    SnsMessageFilterPolicy:
+      Type: String
+      Description: "SNS filter policy for messages"
+      Default: ''
+
+    SnsTopicArn:
+      Type: AWS::SSM::Parameter::Value<String>
+      Description: "ARN of SNS topic to subscribe to"
+      Default: "/cloudwatch-alarm-sns-topic/${self:custom.stage}/SnsTopicArn"
+
+  pythonRequirements:
+    dockerizePip: false
+
+
+provider:
+  name: aws
+  runtime: python3.6
+  stage: ${self:custom.stage}
+  iamRoleStatements:
+    - Effect: "Allow"
+      Action:
+        - "sns:publish"
+      Resource:
+        Ref: PagerDutySnsTopic
+  environment:
+    LOG_LEVEL: ${self:custom.log_level}
+  stackTags:
+    x-service: cloudwatch-to-pagerduty-publisher
+    x-stack: ${self:service}-${self:provider.stage}
+
+functions:
+  MessageFormatter:
+    handler: handlers/message_formatter.handler
+    description: "Format messages from CloudWatch to be more descriptive in PagerDuty"
+    memorySize: 128
+    timeout: 10
+    environment:
+      SNS_TOPIC_ARN:
+        Ref: PagerDutySnsTopic
+
+
+resources:
+  Resources:
+    ParentSnsTopicLambdaPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        Action: "lambda:InvokeFunction"
+        FunctionName:
+          Ref: MessageFormatterLambdaFunction
+        Principal: "sns.amazonaws.com"
+        SourceArn:
+          Ref: SnsTopicArn
+
+    ParentSnsTopicSubscription:
+      Type: AWS::SNS::Subscription
+      Properties:
+        Endpoint:
+          Fn::GetAtt:
+            - MessageFormatterLambdaFunction
+            - Arn
+        Protocol: lambda
+        TopicArn:
+          Ref: SnsTopicArn
+
+    PagerDutySnsTopic:
+      Type: AWS::SNS::Topic
+
+    PagerDutySnsTopicSubscription:
+      Type: AWS::SNS::Subscription
+      Properties:
+        Endpoint:
+          Ref: PagerDutyIntegrationEndpoint
+        Protocol: https
+        TopicArn:
+          Ref: PagerDutySnsTopic
+
